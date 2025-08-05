@@ -1,154 +1,209 @@
-// global values
-const NOTION_SECRET_KEY = "HELLO"; // internal integration secret
-const PAGE_ID = "WORLD"; // part of the URL after page name
-const NOTION_VERSION = "2022-06-28";
-
-// Read sheet + upload into notion
-const syncSheetToNotion = () => {
-  console.log("[syncSheetToNotion] Starting sync…");
-  const ss    = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName('Requests');
-  if (!sheet) {
-    console.error("[syncSheetToNotion] Sheet ‘Requests’ not found!");
+// main function to run
+const main = () => {
+  console.log("[processRawDataToUpload] Starting data processing...");
+  
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const rawSheet = ss.getSheetByName('Raw Data + Responses');
+  const uploadSheet = ss.getSheetByName('Upload');
+  
+  if (!rawSheet) {
+    console.error("[processRawDataToUpload] Sheet 'Raw Data + Responses' not found!");
     return;
   }
-  const dataRange = sheet.getDataRange().getValues();
-  console.log("[syncSheetToNotion] Retrieved data, rows:", dataRange.length - 1);
-  const [headers, ...rows] = dataRange;
+  
+  if (!uploadSheet) {
+    console.error("[processRawDataToUpload] Sheet 'Upload' not found!");
+    return;
+  }
+  
+  // Get raw data
+  const rawData = rawSheet.getDataRange().getValues();
+  const [rawHeaders, ...rawRows] = rawData;
+  
+  console.log("[processRawDataToUpload] Raw data headers:", rawHeaders);
+  console.log("[processRawDataToUpload] Processing", rawRows.length, "rows");
+  
+  // Clear upload sheet before writing new data
+  const uploadRange = uploadSheet.getDataRange();
+  if (uploadRange.getNumRows() > 1) {
+    uploadSheet.getRange(2, 1, uploadRange.getNumRows() - 1, uploadRange.getNumColumns()).clearContent();
+  }
+  
+  // process each row
+  const uploadData = [];
+  rawRows.forEach((row, index) => {
+    const processedRow = processRawRow(rawHeaders, row, index + 1);
+    if (processedRow) {
+      uploadData.push(processedRow);
+    }
+  });
+  
+  // write to upload
+  if (uploadData.length > 0) {
+    const uploadHeaders = ['ID', 'Type', 'Title', 'Request For', 'Team', 'Notes', 'Due Date', 'Urgency', 'Status'];
+    
+    // double-check headers
+    if (uploadSheet.getRange(1, 1).getValue() !== 'ID') {
+      uploadSheet.getRange(1, 1, 1, uploadHeaders.length).setValues([uploadHeaders]);
+    }
+    
+    // write the data
+    uploadSheet.getRange(2, 1, uploadData.length, uploadHeaders.length).setValues(uploadData);
+    console.log("[processRawDataToUpload] Successfully wrote", uploadData.length, "rows to Upload sheet");
+  }
+}
 
-  rows.forEach((row, idx) => {
-    console.log(`[syncSheetToNotion] Row #${idx + 1}:`, row);
-    const data = headers.reduce((obj, h, i) => { obj[h] = row[i]; return obj; }, {});
-    upsertNotionPage(data);
+// FUNCTION: process an individual raw data row
+const processRawRow = (headers, row, rowIndex) => {
+  try {
+    // create object from headers and row data
+    const data = headers.reduce((obj, header, i) => {
+      obj[header] = row[i] || '';
+      return obj;
+    }, {});
+    
+    // set status as reimbursement / invoice
+    const hasReimbursementData = data['What request are you making?'] == 'Reimbursement';
+    const hasInvoiceData = data['What request are you making?'] == 'Sponsor Invoice';
+    
+    let type, title, team;
+    
+    if (hasReimbursementData && !hasInvoiceData) {
+      type = 'Reimbursement';
+      title = data['Please give a quick description of what you bought. If it\'s part of the budget sheet, please provide the line number too'] || data[Object.keys(data)[3]] || ''; // Column D equivalent
+      team = data[Object.keys(data)[4]] || ''; // Column E equivalent
+    } else if (hasInvoiceData) {
+      type = 'Invoice';
+      title = data['Company'] || data[Object.keys(data)[9]] || ''; // Column J equivalent
+      team = 'Spocos';
+    } else {
+      console.log(`[processRawRow] Row ${rowIndex}: Unable to determine type, skipping`);
+      return null;
+    }
+    
+    // extract request
+    const requestFor = data['Full Name'] || data[Object.keys(data)[1]] || '';
+    
+    return [
+      rowIndex,           // ID
+      type,               // Type
+      title,              // Title
+      requestFor,         // Request For
+      team,               // Team
+      '',                 // Notes (manual input)
+      '',                 // Due Date (manual input)
+      '',                 // Urgency (manual input)
+      ''                  // Status (manual input)
+    ];
+    
+  } catch (error) {
+    console.error(`[processRawRow] Error processing row ${rowIndex}:`, error);
+    return null;
+  }
+}
+
+// set up automatic processing trigger
+const setupAutoProcess = () => {
+  // Delete existing triggers first
+  ScriptApp.getProjectTriggers().forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'processRawDataToUpload') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  
+  // create new trigger for automatic processing
+  ScriptApp.newTrigger('processRawDataToUpload')
+    .timeBased()
+    .everyHours(1) // Process every hour
+    .create();
+    
+  console.log("[setupAutoProcess] Automatic processing trigger created - runs every hour");
+}
+
+// debugging for raw data
+const debugRawData = () => {
+  console.log("[debugRawData] Checking raw data structure...");
+  
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const rawSheet = ss.getSheetByName('Raw Data + Responses');
+  
+  if (!rawSheet) {
+    console.error("[debugRawData] Sheet 'Raw Data + Responses' not found!");
+    return;
+  }
+  
+  const rawData = rawSheet.getDataRange().getValues();
+  const [rawHeaders, ...rawRows] = rawData;
+  
+  console.log("[debugRawData] Headers found:", rawHeaders);
+  console.log("[debugRawData] First data row:", rawRows[0]);
+  console.log("[debugRawData] Total rows:", rawRows.length);
+  
+  // show sample of how the data will be processed
+  if (rawRows.length > 0) {
+    const sampleProcessed = processRawRow(rawHeaders, rawRows[0], 1);
+    console.log("[debugRawData] Sample processed row:", sampleProcessed);
+  }
+}
+
+// debugging for upload sheet
+const debugUploadSheet = () => {
+  console.log("[debugUploadSheet] Checking Upload sheet data...");
+  
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const uploadSheet = ss.getSheetByName('Upload');
+  
+  if (!uploadSheet) {
+    console.error("[debugUploadSheet] Upload sheet not found!");
+    return;
+  }
+  
+  const data = uploadSheet.getDataRange().getValues();
+  console.log("[debugUploadSheet] Upload sheet data:");
+  data.forEach((row, index) => {
+    console.log(`Row ${index}:`, row);
   });
 }
 
-// If page w ID exists, update it ELSE create a new one
-const upsertNotionPage = (data) => {
-  console.log("[upsertNotionPage] Data to upsert:", data);
-  const queryUrl = `https://api.notion.com/v1/databases/${PAGE_ID}/query`;
-  const queryOpts = {
-    method:  'post',
-    headers: defaultHeaders(),
-    payload: JSON.stringify({
-      filter: {
-        property: 'ID',
-        number:   { equals: data.ID }
-      }
-    }),
-    muteHttpExceptions: true
-  };
-  console.log("[upsertNotionPage] Querying Notion:", queryUrl, queryOpts.payload);
-
-  let queryResp;
-  try {
-    queryResp = UrlFetchApp.fetch(queryUrl, queryOpts);
-  } catch (err) {
-    console.error("[upsertNotionPage] fetch(query) failed:", err);
+// Create a summary report
+const createSummaryReport = () => {
+  console.log("[createSummaryReport] Creating processing summary...");
+  
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const uploadSheet = ss.getSheetByName('Upload');
+  
+  if (!uploadSheet) {
+    console.error("[createSummaryReport] Upload sheet not found!");
     return;
   }
-
-  const code = queryResp.getResponseCode();
-  const body = queryResp.getContentText();
-  console.log(`[upsertNotionPage] Query response code: ${code}`);
-  console.log("[upsertNotionPage] Query response body:", body);
-
-  let results = [];
-  try {
-    results = JSON.parse(body).results || [];
-  } catch (err) {
-    console.error("[upsertNotionPage] JSON.parse failed:", err);
-    return;
-  }
-
-  if (results.length) {
-    console.log("[upsertNotionPage] Found existing page, updating:", results[0].id);
-    updateNotionPage(results[0].id, data);
-  } else {
-    console.log("[upsertNotionPage] No page found, creating a new one");
-    createNotionPage(data);
-  }
-}
-
-// helper function for new page
-const createNotionPage = (data) => {
-  const url = 'https://api.notion.com/v1/pages';
-  const payload = {
-    parent:     { database_id: PAGE_ID },
-    properties: buildProperties(data)
-  };
-  const opts = {
-    method:  'post',
-    headers: defaultHeaders(),
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  };
-
-  console.log("[createNotionPage] URL:", url);
-  console.log("[createNotionPage] Payload:", opts.payload);
-
-  let resp;
-  try {
-    resp = UrlFetchApp.fetch(url, opts);
-  } catch (err) {
-    console.error("[createNotionPage] fetch(create) failed:", err);
-    return;
-  }
-
-  console.log(`[createNotionPage] Response code: ${resp.getResponseCode()}`);
-  console.log("[createNotionPage] Response body:", resp.getContentText());
-}
-
-// update existing page
-const updateNotionPage = (pageId, data) => {
-  const url = `https://api.notion.com/v1/pages/${pageId}`;
-  const payload = { properties: buildProperties(data) };
-  const opts = {
-    method:  'patch',
-    headers: defaultHeaders(),
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  };
-
-  console.log("[updateNotionPage] URL:", url);
-  console.log("[updateNotionPage] Payload:", opts.payload);
-
-  let resp;
-  try {
-    resp = UrlFetchApp.fetch(url, opts);
-  } catch (err) {
-    console.error("[updateNotionPage] fetch(update) failed:", err);
-    return;
-  }
-
-  console.log(`[updateNotionPage] Response code: ${resp.getResponseCode()}`);
-  console.log("[updateNotionPage] Response body:", resp.getContentText());
-}
-
-// Build notion params from sheets
-const buildProperties = (d) => {
-  // no change here
+  
+  const data = uploadSheet.getDataRange().getValues();
+  const [headers, ...rows] = data;
+  
+  // Count by type
+  const typeCounts = {};
+  const teamCounts = {};
+  
+  rows.forEach(row => {
+    const type = row[1]; // Type column
+    const team = row[4]; // Team column
+    
+    if (type) {
+      typeCounts[type] = (typeCounts[type] || 0) + 1;
+    }
+    if (team) {
+      teamCounts[team] = (teamCounts[team] || 0) + 1;
+    }
+  });
+  
+  console.log("[createSummaryReport] Processing Summary:");
+  console.log("- Total entries:", rows.length);
+  console.log("- By type:", typeCounts);
+  console.log("- By team:", teamCounts);
+  
   return {
-    'ID':          { number: d.ID },
-    'Title':       { title:       [{ text: { content: d.Title }}] },
-    'Type':        { select:      { name: d.Type }},
-    'Request For': { rich_text:   [{ text: { content: d['Request For'] }}] },
-    'Team':        { rich_text:   [{ text: { content: d.Team }}] },
-    'Description': { rich_text:   [{ text: { content: d.Description }}] },
-    'Amount':      { number:      parseFloat(d.Amount) || 0 },
-    'Due Date':    { date:        { start: new Date(d['Due Date']).toISOString() }},
-    'Urgency':     { select:      { name: d.Urgency }},
-    'Status':      { select:      { name: d.Status }}
+    totalEntries: rows.length,
+    byType: typeCounts,
+    byTeam: teamCounts
   };
-}
-
-// Include default headers
-const defaultHeaders = () => {
-  const headers = {
-    'Authorization': `Bearer ${NOTION_SECRET_KEY}`,
-    'Notion-Version': NOTION_VERSION,
-    'Content-Type':  'application/json'
-  };
-  console.log("[defaultHeaders] Using headers:", headers);
-  return headers;
 }
